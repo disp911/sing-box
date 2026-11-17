@@ -115,21 +115,35 @@ func (e *RealityClientConfig) ClientHandshake(ctx context.Context, conn net.Conn
 	if err != nil {
 		return nil, err
 	}
+	// REALITY servers since Xray v26.9.8 take only a Client Hello with an
+	// X25519MLKEM768 key share: keep it whenever the fingerprint sends one.
+	// A fingerprint naming the group without a share (randomized) would draw a
+	// HelloRetryRequest, so there the group is still dropped.
+	var hasMLKEMShare, hasX25519Share bool
 	for _, extension := range uConn.Extensions {
-		if ce, ok := extension.(*utls.SupportedCurvesExtension); ok {
-			ce.Curves = common.Filter(ce.Curves, func(curveID utls.CurveID) bool {
-				return curveID != utls.X25519MLKEM768
-			})
-		}
 		if ks, ok := extension.(*utls.KeyShareExtension); ok {
-			ks.KeyShares = common.Filter(ks.KeyShares, func(share utls.KeyShare) bool {
-				return share.Group != utls.X25519MLKEM768
-			})
+			for _, share := range ks.KeyShares {
+				switch share.Group {
+				case utls.X25519MLKEM768:
+					hasMLKEMShare = true
+				case utls.X25519:
+					hasX25519Share = true
+				}
+			}
 		}
 	}
-	err = uConn.BuildHandshakeState()
-	if err != nil {
-		return nil, err
+	if !hasMLKEMShare {
+		for _, extension := range uConn.Extensions {
+			if ce, ok := extension.(*utls.SupportedCurvesExtension); ok {
+				ce.Curves = common.Filter(ce.Curves, func(curveID utls.CurveID) bool {
+					return curveID != utls.X25519MLKEM768
+				})
+			}
+		}
+		err = uConn.BuildHandshakeState()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if len(uConfig.NextProtos) > 0 {
@@ -169,7 +183,12 @@ func (e *RealityClientConfig) ClientHandshake(ctx context.Context, conn net.Conn
 	if keyShareKeys == nil {
 		return nil, E.New("nil KeyShareKeys")
 	}
+	// The server seals with the plain X25519 share, or without one with the
+	// X25519 half of the X25519MLKEM768 share.
 	ecdheKey := keyShareKeys.Ecdhe
+	if !hasX25519Share && keyShareKeys.MlkemEcdhe != nil {
+		ecdheKey = keyShareKeys.MlkemEcdhe
+	}
 	if ecdheKey == nil {
 		return nil, E.New("nil ecdheKey")
 	}
