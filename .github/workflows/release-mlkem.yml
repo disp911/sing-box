@@ -1,0 +1,37 @@
+# Builds the patched sing-box for OpenWrt routers (25.12) when a tag
+# such as v1.13.21-mlkem is pushed, and publishes it as a release.
+name: Release patched sing-box
+
+on:
+  push:
+    tags: ['v*-mlkem']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      # The tags of the OpenWrt 25.12 package, so Podkop finds the same features.
+      BUILD_TAGS: with_clash_api,with_gvisor,with_quic,with_tailscale,with_utls,with_wireguard,badlinkname,tfogo_checklinkname0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          version="${version%-mlkem}"
+          for arch in arm64 amd64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -tags "$BUILD_TAGS" \
+              -ldflags "-checklinkname=0 -s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=$version" \
+              -o "dist/sing-box-linux-$arch" ./cmd/sing-box
+          done
+          cd dist && sha256sum sing-box-linux-* > sha256sums.txt && cat sha256sums.txt
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes "sing-box ${GITHUB_REF_NAME%-mlkem} for OpenWrt 25.12 with the REALITY fix: the X25519MLKEM768 key share is kept, so it connects to REALITY servers on Xray v26.9.8 and later (SagerNet/sing-box#4520). Use the chrome fingerprint. Router (aarch64): replace /usr/bin/sing-box with sing-box-linux-arm64."
